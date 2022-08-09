@@ -24,6 +24,7 @@ class KCoroutine {
     void disPatch();
     void yield();
     void registerFd(int fd, bool is_write);
+    void unRegisterFd(int fd);
     void switchToMainCtx();
     ucontext_t* schedule();
 

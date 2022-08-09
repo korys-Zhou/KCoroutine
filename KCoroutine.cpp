@@ -1,7 +1,6 @@
 #include "KCoroutine.h"
 
 KCoroutine::KCoroutine() {
-    getcontext(&m_mainctx);
     m_runningcoro = nullptr;
     m_epfd = epoll_create1(0);
     if (m_epfd < 0) {
@@ -22,6 +21,8 @@ void KCoroutine::disPatch() {
 
         m_running = std::move(m_ready);
         m_ready.clear();
+        printf("Running coros: %d, Waiting coros: %d\n", m_running.size(),
+               m_io_waitingcoros.size());
         for (auto cur : m_running) {
             m_runningcoro = cur;
             swapcontext(&m_mainctx, cur->context());
@@ -81,10 +82,21 @@ void KCoroutine::registerFd(int fd, bool is_write) {
         }
     } else {
         if (is_write) {
-            it->second.read = m_runningcoro;
-        } else {
             it->second.write = m_runningcoro;
+        } else {
+            it->second.read = m_runningcoro;
         }
+    }
+}
+
+void KCoroutine::unRegisterFd(int fd) {
+    auto it = m_io_waitingcoros.find(fd);
+    if (it == m_io_waitingcoros.end()) {
+        return;
+    }
+    m_io_waitingcoros.erase(it);
+    if (epoll_ctl(m_epfd, EPOLL_CTL_DEL, fd, nullptr) < 0) {
+        perror("epoll_ctl_del");
     }
 }
 
@@ -98,6 +110,7 @@ ucontext_t* KCoroutine::schedule() {
 
 UnitCoroutine::UnitCoroutine(std::function<void()> run, KCoroutine* kcoro)
     : m_run(run), m_kcoro(kcoro) {
+    m_status = UnitCoroutineStatus::INIT;
     getcontext(&m_thisctx);
     m_stksize = 1024 * 128;
     m_stkptr = new char[m_stksize];

@@ -21,11 +21,19 @@ int main() {
                 continue;
             }
 
+            OpFd fd_op(fd_client);
             kcoro->createCoroutine([&]() {
                 char buffer[1024];
-                int n = read(fd_client, buffer, 1024);
+                int n = fd_op.Read(buffer, 1024);
+                if (n <= 0) {
+                    fd_op.Close();
+                }
                 buffer[n] = '\0';
                 std::cout << "recv: " << buffer << std::endl;
+                if (fd_op.Write(buffer, n) <= 0) {
+                    fd_op.Close();
+                }
+                fd_op.Close();
             });
         }
     });
