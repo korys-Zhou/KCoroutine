@@ -18,19 +18,20 @@ void KCoroutine::createCoroutine(std::function<void()> run) {
 void KCoroutine::disPatch() {
     while (true) {
         // if(m_ready.empty()) continue;
-
-        m_running = std::move(m_ready);
-        m_ready.clear();
-        printf("Running coros: %d, Waiting coros: %d\n", m_running.size(),
-               m_io_waitingcoros.size());
-        for (auto cur : m_running) {
-            m_runningcoro = cur;
-            swapcontext(&m_mainctx, cur->context());
-            m_runningcoro = nullptr;
-            if (cur->isFinished())
-                delete cur;
+        if (m_ready.size() > 0) {
+            m_running = std::move(m_ready);
+            m_ready.clear();
+            printf("Running coros: %d, Waiting coros: %d\n", m_running.size(),
+                   m_io_waitingcoros.size());
+            for (auto cur : m_running) {
+                m_runningcoro = cur;
+                swapcontext(&m_mainctx, cur->context());
+                m_runningcoro = nullptr;
+                if (cur->isFinished())
+                    delete cur;
+            }
+            m_running.clear();
         }
-        m_running.clear();
 
         epoll_event events[128];
         int ready = epoll_wait(m_epfd, events, 128, 5);
@@ -82,9 +83,11 @@ void KCoroutine::registerFd(int fd, bool is_write) {
         }
     } else {
         if (is_write) {
+            it->second.read = nullptr;
             it->second.write = m_runningcoro;
         } else {
             it->second.read = m_runningcoro;
+            it->second.write = nullptr;
         }
     }
 }

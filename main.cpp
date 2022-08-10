@@ -1,3 +1,4 @@
+#include <string.h>
 #include <iostream>
 #include "KCoroutine.h"
 #include "KTCP.h"
@@ -33,6 +34,14 @@ int main() {
                 if (fd_op.Write(buffer, n) <= 0) {
                     fd_op.Close();
                 }
+
+                // Writing yield test...
+                // static char msg[4200000];
+                // memset(msg, 0, sizeof(msg));
+                // if (fd_op.Write(msg, sizeof(msg)) <= 0) {
+                //     fd_op.Close();
+                // }
+
                 fd_op.Close();
             });
         }

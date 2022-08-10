@@ -2,6 +2,7 @@
 
 void ListenFd::Listen(uint16_t port) {
     m_fd = socket(AF_INET, SOCK_STREAM, 0);
+    printf("fd = %d listenning...\n", m_fd);
     if (m_fd < 0) {
         perror("socket");
         exit(0);
