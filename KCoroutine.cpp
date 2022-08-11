@@ -5,24 +5,27 @@ KCoroutine::KCoroutine() {
     m_epfd = epoll_create1(0);
     if (m_epfd < 0) {
         perror("epoll_create");
-        exit(0);
+        exit(-1);
     }
 }
 
-KCoroutine::~KCoroutine() {}
+KCoroutine::~KCoroutine() {
+    close(m_epfd);
+}
 
-void KCoroutine::createCoroutine(std::function<void()> run) {
-    m_ready.push_back(new UnitCoroutine(run, this));
+void KCoroutine::createCoroutine(std::function<void()> run, size_t stksize) {
+    if (stksize == 0)
+        stksize = 1024 * 1024;
+    m_ready.push_back(new UnitCoroutine(run, this, stksize));
 }
 
 void KCoroutine::disPatch() {
     while (true) {
-        // if(m_ready.empty()) continue;
-        if (m_ready.size() > 0) {
+        if (!m_ready.empty()) {
             m_running = std::move(m_ready);
             m_ready.clear();
             printf("Running coros: %d, Waiting coros: %d\n", m_running.size(),
-                   m_io_waitingcoros.size());
+                   m_waiting.size());
             for (auto cur : m_running) {
                 m_runningcoro = cur;
                 swapcontext(&m_mainctx, cur->context());
@@ -37,90 +40,83 @@ void KCoroutine::disPatch() {
         int ready = epoll_wait(m_epfd, events, 128, 5);
         if (ready < 0) {
             perror("epoll_wait");
-            exit(0);
+            exit(-1);
         }
         for (int i = 0; i < ready; ++i) {
             auto& ev = events[i];
             int fd = ev.data.fd;
-            auto it = m_io_waitingcoros.find(fd);
-            if (it == m_io_waitingcoros.end())
-                continue;
-            else {
-                if (ev.events | EPOLLIN && it->second.read) {
-                    m_ready.push_back(it->second.read);
-                }
-                if (ev.events | EPOLLOUT && it->second.write) {
-                    m_ready.push_back(it->second.write);
-                }
-            }
+            wakeUpFd(fd);
         }
     }
 }
 
 void KCoroutine::yield() {
+    assert(m_runningcoro != nullptr);
     m_ready.push_back(m_runningcoro);
-    swapcontext(m_runningcoro->context(), &m_mainctx);
+    switchToMainCtx();
 }
 
-void KCoroutine::registerFd(int fd, bool is_write) {
-    auto it = m_io_waitingcoros.find(fd);
-    if (it == m_io_waitingcoros.end()) {
-        WaitingCoros cur;
-        if (is_write) {
-            cur.read = nullptr;
-            cur.write = m_runningcoro;
-        } else {
-            cur.read = m_runningcoro;
-            cur.write = nullptr;
-        }
-        m_io_waitingcoros.emplace(fd, cur);
-        epoll_event ev;
-        ev.data.fd = fd;
-        ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
-        if (epoll_ctl(m_epfd, EPOLL_CTL_ADD, fd, &ev) < 0) {
-            perror("epoll_ctl_add");
-            exit(0);
-        }
-    } else {
-        if (is_write) {
-            it->second.read = nullptr;
-            it->second.write = m_runningcoro;
-        } else {
-            it->second.read = m_runningcoro;
-            it->second.write = nullptr;
-        }
+void KCoroutine::registerFd(int fd) {
+    epoll_event ev;
+    ev.data.fd = fd;
+    ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
+    if (epoll_ctl(m_epfd, EPOLL_CTL_ADD, fd, &ev) < 0) {
+        perror("epoll_ctl_add");
+        exit(-1);
     }
 }
 
 void KCoroutine::unRegisterFd(int fd) {
-    auto it = m_io_waitingcoros.find(fd);
-    if (it == m_io_waitingcoros.end()) {
-        return;
+    auto it = m_waiting.find(fd);
+    if (it != m_waiting.end()) {
+        wakeUpFd(fd);
     }
-    m_io_waitingcoros.erase(it);
+
     if (epoll_ctl(m_epfd, EPOLL_CTL_DEL, fd, nullptr) < 0) {
         perror("epoll_ctl_del");
     }
+}
+
+void KCoroutine::switchToWaiting(int fd) {
+    assert(m_runningcoro != nullptr);
+    m_waiting.emplace(fd, m_runningcoro);
+    switchToMainCtx();
 }
 
 void KCoroutine::switchToMainCtx() {
     swapcontext(m_runningcoro->context(), &m_mainctx);
 }
 
-ucontext_t* KCoroutine::schedule() {
+void KCoroutine::wakeUpFd(int fd) {
+    auto it = m_waiting.find(fd);
+    if (it != m_waiting.end()) {
+        printf("fd = %d wake up.\n", fd);
+        m_ready.push_back(it->second);
+        m_waiting.erase(it);
+    }
+}
+
+ucontext_t* KCoroutine::getMainCtx() {
     return &m_mainctx;
 }
 
-UnitCoroutine::UnitCoroutine(std::function<void()> run, KCoroutine* kcoro)
-    : m_run(run), m_kcoro(kcoro) {
-    m_status = UnitCoroutineStatus::INIT;
+int64_t KCoroutine::NowInMs() {
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    return int64_t(tv.tv_sec * 1000) + tv.tv_usec / 1000;
+}
+
+UnitCoroutine::UnitCoroutine(std::function<void()> run,
+                             KCoroutine* kcoro,
+                             size_t stksize)
+    : m_run(run), m_kcoro(kcoro), m_stksize(stksize) {
     getcontext(&m_thisctx);
-    m_stksize = 1024 * 128;
     m_stkptr = new char[m_stksize];
-    m_thisctx.uc_link = kcoro->schedule();
     m_thisctx.uc_stack.ss_sp = m_stkptr;
     m_thisctx.uc_stack.ss_size = m_stksize;
+    m_thisctx.uc_link = kcoro->getMainCtx();
     makecontext(&m_thisctx, (void (*)())UnitCoroutine::start, 1, this);
+    m_status = UnitCoroutineStatus::INIT;
 }
 
 UnitCoroutine::~UnitCoroutine() {

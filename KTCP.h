@@ -3,31 +3,40 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <inttypes.h>
 #include <netinet/tcp.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <unistd.h>
+#include <memory>
+#include <optional>
 #include "KCoroutine.h"
 
-class ListenFd {
+class Fd {
    public:
-    void Listen(uint16_t port);
-    int Accept();
+    Fd(int fd = -1);
+    virtual ~Fd();
 
-   private:
+    void registerFd();
+    bool isValid();
+
+   protected:
     int m_fd;
 };
 
-class OpFd {
+class OpFd;
+
+class ListenFd : public Fd {
+   public:
+    ListenFd(int fd);
+    ~ListenFd();
+    static ListenFd Listen(uint16_t port);
+    std::optional<std::shared_ptr<OpFd>> Accept();
+};
+
+class OpFd : public Fd {
    public:
     OpFd(int fd);
+    ~OpFd();
     int Read(char* buffer, size_t size);
     int Write(const char* buffer, size_t size);
-    void Close();
-
-   private:
-    int m_fd;
 };

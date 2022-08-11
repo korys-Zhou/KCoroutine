@@ -1,68 +1,108 @@
 #include "KTCP.h"
 
-void ListenFd::Listen(uint16_t port) {
-    m_fd = socket(AF_INET, SOCK_STREAM, 0);
-    printf("fd = %d listenning...\n", m_fd);
-    if (m_fd < 0) {
-        perror("socket");
-        exit(0);
-    }
-    if (fcntl(m_fd, F_SETFL, O_NONBLOCK) < 0) {
-        perror("fcntl");
-        exit(0);
-    }
+Fd::Fd(int fd) {
+    m_fd = fd;
+}
 
+Fd::~Fd() {
+    if (isValid()) {
+        close(m_fd);
+        printf("fd = %d closed.", m_fd);
+    } else {
+        printf("fd = %d is destructed.", m_fd);
+    }
+    m_fd = -1;
+}
+
+bool Fd::isValid() {
+    return m_fd > 0;
+}
+
+void Fd::registerFd() {
+    KCoroutine* kcoro = KCoroutine::getInstance();
+    kcoro->registerFd(m_fd);
+}
+
+ListenFd::ListenFd(int fd) : Fd(fd) {}
+
+ListenFd::~ListenFd() {
+    KCoroutine* kcoro = KCoroutine::getInstance();
+    kcoro->unRegisterFd(m_fd);
+}
+
+ListenFd ListenFd::Listen(uint16_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (fd < 0) {
+        perror("socket");
+        exit(-1);
+    }
+    if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
+        perror("fcntl");
+        exit(-1);
+    }
     int flag = 1;
-    setsockopt(m_fd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag)) < 0) {
+        perror("set_reuse");
+        exit(-1);
+    };
 
     sockaddr_in addr;
     addr.sin_port = htons(port);
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_family = AF_INET;
 
-    if (bind(m_fd, (sockaddr*)&addr, sizeof(addr))) {
+    if (bind(fd, (sockaddr*)&addr, sizeof(addr))) {
         perror("bind");
-        exit(0);
+        exit(-1);
     }
 
-    if (listen(m_fd, 32) < 0) {
+    if (listen(fd, 32) < 0) {
         perror("listen");
-        exit(0);
+        exit(-1);
     }
+
+    ListenFd ret(fd);
+    ret.registerFd();
+
+    printf("fd = %d listenning...\n", fd);
+    return ret;
 }
 
-int ListenFd::Accept() {
+std::optional<std::shared_ptr<OpFd>> ListenFd::Accept() {
     KCoroutine* kcoro = KCoroutine::getInstance();
     while (true) {
         int fd_client = accept(m_fd, nullptr, nullptr);
         if (fd_client > 0) {
+            if (fcntl(fd_client, F_SETFL, O_NONBLOCK) < 0) {
+                perror("fcntl");
+                exit(-1);
+            }
             int flag = 1;
             if (setsockopt(fd_client, IPPROTO_TCP, TCP_NODELAY, &flag,
                            sizeof(flag)) < 0) {
-                perror("setsockopt_tcp_nodelay");
-                return -1;
+                close(fd_client);
+                fd_client = -1;
             }
             printf("Accept fd = %d\n", fd_client);
-            if (fcntl(fd_client, F_SETFL, O_NONBLOCK) < 0) {
-                perror("fcntl");
-                exit(0);
-            }
-            return fd_client;
+            kcoro->registerFd(fd_client);
+            return std::shared_ptr<OpFd>(new OpFd(fd_client));
         } else if (errno == EAGAIN) {
-            kcoro->registerFd(m_fd, false);
-            kcoro->switchToMainCtx();
+            kcoro->switchToWaiting(m_fd);
         } else if (errno == EINTR) {
             continue;
         } else {
             perror("accept");
-            return -1;
         }
     }
-    return -1;
+    return std::nullopt;
 }
 
-OpFd::OpFd(int fd) {
-    m_fd = fd;
+OpFd::OpFd(int fd) : Fd(fd) {}
+
+OpFd::~OpFd() {
+    KCoroutine* kcoro = KCoroutine::getInstance();
+    kcoro->unRegisterFd(m_fd);
 }
 
 int OpFd::Read(char* buffer, size_t size) {
@@ -74,8 +114,7 @@ int OpFd::Read(char* buffer, size_t size) {
             return n;
         } else if (errno == EAGAIN) {
             printf("fd = %d read yield.\n", m_fd);
-            kcoro->registerFd(m_fd, false);
-            kcoro->switchToMainCtx();
+            kcoro->switchToWaiting(m_fd);
         } else if (errno != EINTR) {
             perror("read");
             return -1;
@@ -96,22 +135,11 @@ int OpFd::Write(const char* buffer, size_t size) {
             return 0;
         } else if (errno == EAGAIN) {
             printf("fd = %d write yield.\n", m_fd);
-            kcoro->registerFd(m_fd, true);
-            kcoro->switchToMainCtx();
+            kcoro->switchToWaiting(m_fd);
         } else if (errno != EINTR) {
             perror("write");
             return -1;
         }
     }
     return size;
-}
-
-void OpFd::Close() {
-    if (m_fd < 0) {
-        return;
-    }
-    KCoroutine* kcoro = KCoroutine::getInstance();
-    kcoro->unRegisterFd(m_fd);
-    close(m_fd);
-    m_fd = -1;
 }

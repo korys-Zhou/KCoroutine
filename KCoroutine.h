@@ -1,11 +1,16 @@
 #pragma once
 
+#include <assert.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <sys/epoll.h>
+#include <sys/time.h>
 #include <ucontext.h>
+#include <unistd.h>
+#include <deque>
 #include <functional>
-#include <list>
 #include <map>
+#include <vector>
 
 typedef enum {
     INIT = 0,
@@ -20,13 +25,15 @@ class KCoroutine {
    public:
     virtual ~KCoroutine();
 
-    void createCoroutine(std::function<void()> run);
+    void createCoroutine(std::function<void()> run, size_t stksize);
     void disPatch();
     void yield();
-    void registerFd(int fd, bool is_write);
+    void registerFd(int fd);
     void unRegisterFd(int fd);
+    void switchToWaiting(int fd);
     void switchToMainCtx();
-    ucontext_t* schedule();
+    void wakeUpFd(int fd);
+    ucontext_t* getMainCtx();
 
    public:
     static KCoroutine* getInstance() {
@@ -36,21 +43,20 @@ class KCoroutine {
 
    private:
     KCoroutine();
+    int64_t NowInMs();
 
    private:
     int m_epfd;
-    std::list<UnitCoroutine*> m_ready, m_running;
+    std::deque<UnitCoroutine*> m_ready, m_running;
+    std::map<int, UnitCoroutine*> m_waiting;
+    std::map<int, int> m_timeout;
     ucontext_t m_mainctx;
     UnitCoroutine* m_runningcoro;
-    typedef struct {
-        UnitCoroutine *write, *read;
-    } WaitingCoros;
-    std::map<int, WaitingCoros> m_io_waitingcoros;
 };
 
 class UnitCoroutine {
    public:
-    UnitCoroutine(std::function<void()> run, KCoroutine* kcoro);
+    UnitCoroutine(std::function<void()> run, KCoroutine* kcoro, size_t stksize);
     virtual ~UnitCoroutine();
 
     ucontext_t* context();
