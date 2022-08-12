@@ -1,5 +1,6 @@
 #include "KCoroutine.h"
 
+// return current time in ms
 int64_t NowInMs() {
     timeval tv;
     gettimeofday(&tv, nullptr);
@@ -27,6 +28,7 @@ void KCoroutine::createCoroutine(std::function<void()> run, size_t stksize) {
 
 void KCoroutine::disPatch() {
     while (true) {
+        // run ready coroutines
         if (!m_ready.empty()) {
             m_running = std::move(m_ready);
             m_ready.clear();
@@ -44,6 +46,7 @@ void KCoroutine::disPatch() {
                    m_waiting.size());
         }
 
+        // check timeout queue and wake up corresponded fd
         int64_t now = NowInMs();
         while (!m_timeout.empty() && m_timeout.begin()->first <= now) {
             for (int fd : m_timeout.begin()->second) {
@@ -54,6 +57,7 @@ void KCoroutine::disPatch() {
             m_timeout.erase(m_timeout.begin());
         }
 
+        // check epoll events
         epoll_event events[128];
         int ready = epoll_wait(m_epfd, events, 128, 5);
         if (ready < 0) {
@@ -68,12 +72,14 @@ void KCoroutine::disPatch() {
     }
 }
 
+// manually yield, push coroutine to ready queue and run in next loop
 void KCoroutine::yield() {
     assert(m_runningcoro != nullptr);
     m_ready.push_back(m_runningcoro);
     switchToMainCtx();
 }
 
+// register fd to epoll
 void KCoroutine::registerFd(int fd) {
     epoll_event ev;
     ev.data.fd = fd;
@@ -86,6 +92,7 @@ void KCoroutine::registerFd(int fd) {
 
 void KCoroutine::unRegisterFd(int fd) {
     {
+        // close fd
         auto it = m_waiting.find(fd);
         if (it != m_waiting.end()) {
             wakeUpFd(fd);
@@ -93,6 +100,7 @@ void KCoroutine::unRegisterFd(int fd) {
     }
 
     {
+        // update expire time
         auto it = m_fdexpire.find(fd);
         if (it != m_fdexpire.end()) {
             m_fdexpire.erase(it);
@@ -107,6 +115,7 @@ void KCoroutine::unRegisterFd(int fd) {
 void KCoroutine::switchToWaiting(int fd, int64_t expire_at) {
     assert(m_runningcoro != nullptr);
     m_waiting.emplace(fd, m_runningcoro);
+    // update expire time
     if (expire_at > -1 &&
         (!m_fdexpire.count(fd) || m_fdexpire[fd] < expire_at)) {
         m_fdexpire[fd] = expire_at;
@@ -123,6 +132,7 @@ void KCoroutine::wakeUpFd(int fd) {
     auto it = m_waiting.find(fd);
     if (it != m_waiting.end()) {
         printf("fd = %d wake up succeed.\n", fd);
+        // if fd is waked up, its expire time is reset
         if (m_fdexpire.count(fd))
             m_fdexpire[fd] = -1;
         m_ready.push_back(it->second);
