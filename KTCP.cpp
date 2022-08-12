@@ -7,9 +7,9 @@ Fd::Fd(int fd) {
 Fd::~Fd() {
     if (isValid()) {
         close(m_fd);
-        printf("fd = %d closed.", m_fd);
+        printf("fd = %d closed.\n", m_fd);
     } else {
-        printf("fd = %d is destructed.", m_fd);
+        printf("fd = %d is destructed.\n", m_fd);
     }
     m_fd = -1;
 }
@@ -88,7 +88,7 @@ std::optional<std::shared_ptr<OpFd>> ListenFd::Accept() {
             kcoro->registerFd(fd_client);
             return std::shared_ptr<OpFd>(new OpFd(fd_client));
         } else if (errno == EAGAIN) {
-            kcoro->switchToWaiting(m_fd);
+            kcoro->switchToWaiting(m_fd, -1);
         } else if (errno == EINTR) {
             continue;
         } else {
@@ -105,27 +105,40 @@ OpFd::~OpFd() {
     kcoro->unRegisterFd(m_fd);
 }
 
-int OpFd::Read(char* buffer, size_t size) {
+int OpFd::Read(char* buffer, size_t size, int timeout) {
     KCoroutine* kcoro = KCoroutine::getInstance();
+    int64_t expire_at = -1;
+    if (timeout > -1) {
+        expire_at = NowInMs() + timeout;
+    }
 
     while (true) {
         int n = read(m_fd, buffer, size);
         if (n >= 0) {
             return n;
         } else if (errno == EAGAIN) {
+            if (expire_at > -1 && NowInMs() >= expire_at) {
+                printf("fd = %d read timeout...\n", m_fd);
+                break;
+            }
             printf("fd = %d read yield.\n", m_fd);
-            kcoro->switchToWaiting(m_fd);
+            kcoro->switchToWaiting(m_fd, expire_at);
         } else if (errno != EINTR) {
             perror("read");
             return -1;
         }
     }
+
     return -1;
 }
 
-int OpFd::Write(const char* buffer, size_t size) {
+int OpFd::Write(const char* buffer, size_t size, int timeout) {
     KCoroutine* kcoro = KCoroutine::getInstance();
     size_t nwrited = 0;
+    int64_t expire_at = -1;
+    if (timeout > -1) {
+        expire_at = NowInMs() + timeout;
+    }
 
     while (nwrited < size) {
         int n = write(m_fd, buffer + nwrited, size - nwrited);
@@ -134,8 +147,12 @@ int OpFd::Write(const char* buffer, size_t size) {
         } else if (n == 0) {
             return 0;
         } else if (errno == EAGAIN) {
+            if (expire_at > -1 && NowInMs() >= expire_at) {
+                printf("fd = %d write timeout...\n", m_fd);
+                break;
+            }
             printf("fd = %d write yield.\n", m_fd);
-            kcoro->switchToWaiting(m_fd);
+            kcoro->switchToWaiting(m_fd, expire_at);
         } else if (errno != EINTR) {
             perror("write");
             return -1;

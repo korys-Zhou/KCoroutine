@@ -10,6 +10,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <set>
 #include <vector>
 
 typedef enum {
@@ -18,6 +19,8 @@ typedef enum {
     WAITING = 2,
     FINISH = 3
 } UnitCoroutineStatus;
+
+int64_t NowInMs();
 
 class UnitCoroutine;
 
@@ -30,7 +33,7 @@ class KCoroutine {
     void yield();
     void registerFd(int fd);
     void unRegisterFd(int fd);
-    void switchToWaiting(int fd);
+    void switchToWaiting(int fd, int64_t expire_at);
     void switchToMainCtx();
     void wakeUpFd(int fd);
     ucontext_t* getMainCtx();
@@ -43,13 +46,13 @@ class KCoroutine {
 
    private:
     KCoroutine();
-    int64_t NowInMs();
 
    private:
     int m_epfd;
     std::deque<UnitCoroutine*> m_ready, m_running;
     std::map<int, UnitCoroutine*> m_waiting;
-    std::map<int, int> m_timeout;
+    std::map<int64_t, std::set<int>> m_timeout;
+    std::map<int, int64_t> m_fdexpire;
     ucontext_t m_mainctx;
     UnitCoroutine* m_runningcoro;
 };

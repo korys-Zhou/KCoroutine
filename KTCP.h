@@ -37,6 +37,6 @@ class OpFd : public Fd {
    public:
     OpFd(int fd);
     ~OpFd();
-    int Read(char* buffer, size_t size);
-    int Write(const char* buffer, size_t size);
+    int Read(char* buffer, size_t size, int timeout = -1);
+    int Write(const char* buffer, size_t size, int timeout = -1);
 };

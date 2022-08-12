@@ -1,6 +1,5 @@
 #include <string.h>
 #include <iostream>
-#include "KCoroutine.h"
 #include "KTCP.h"
 
 int main() {
@@ -27,7 +26,7 @@ int main() {
                     [fd_op]() {
                         while (true) {
                             char buffer[1024];
-                            int n = (*fd_op)->Read(buffer, 1024);
+                            int n = (*fd_op)->Read(buffer, 1024, 2000);
                             if (n <= 0) {
                                 break;
                             }
@@ -35,7 +34,8 @@ int main() {
                             std::cout << "recv: " << buffer << std::endl;
                             char add[] = " // CHECK OK!";
                             strcat(buffer, add);
-                            if ((*fd_op)->Write(buffer, sizeof(buffer)) <= 0) {
+                            if ((*fd_op)->Write(buffer, sizeof(buffer), 2000) <=
+                                0) {
                                 break;
                             }
                         }

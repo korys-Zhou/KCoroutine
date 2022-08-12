@@ -1,5 +1,11 @@
 #include "KCoroutine.h"
 
+int64_t NowInMs() {
+    timeval tv;
+    gettimeofday(&tv, nullptr);
+    return int64_t(tv.tv_sec * 1000) + tv.tv_usec / 1000;
+}
+
 KCoroutine::KCoroutine() {
     m_runningcoro = nullptr;
     m_epfd = epoll_create1(0);
@@ -34,6 +40,18 @@ void KCoroutine::disPatch() {
                     delete cur;
             }
             m_running.clear();
+            printf("Running coros: %d, Waiting coros: %d\n", m_running.size(),
+                   m_waiting.size());
+        }
+
+        int64_t now = NowInMs();
+        while (!m_timeout.empty() && m_timeout.begin()->first <= now) {
+            for (int fd : m_timeout.begin()->second) {
+                if (m_fdexpire[fd] > m_timeout.begin()->first)
+                    continue;
+                wakeUpFd(fd);
+            }
+            m_timeout.erase(m_timeout.begin());
         }
 
         epoll_event events[128];
@@ -67,9 +85,18 @@ void KCoroutine::registerFd(int fd) {
 }
 
 void KCoroutine::unRegisterFd(int fd) {
-    auto it = m_waiting.find(fd);
-    if (it != m_waiting.end()) {
-        wakeUpFd(fd);
+    {
+        auto it = m_waiting.find(fd);
+        if (it != m_waiting.end()) {
+            wakeUpFd(fd);
+        }
+    }
+
+    {
+        auto it = m_fdexpire.find(fd);
+        if (it != m_fdexpire.end()) {
+            m_fdexpire.erase(it);
+        }
     }
 
     if (epoll_ctl(m_epfd, EPOLL_CTL_DEL, fd, nullptr) < 0) {
@@ -77,9 +104,14 @@ void KCoroutine::unRegisterFd(int fd) {
     }
 }
 
-void KCoroutine::switchToWaiting(int fd) {
+void KCoroutine::switchToWaiting(int fd, int64_t expire_at) {
     assert(m_runningcoro != nullptr);
     m_waiting.emplace(fd, m_runningcoro);
+    if (expire_at > -1 &&
+        (!m_fdexpire.count(fd) || m_fdexpire[fd] < expire_at)) {
+        m_fdexpire[fd] = expire_at;
+        m_timeout[expire_at].emplace(fd);
+    }
     switchToMainCtx();
 }
 
@@ -90,20 +122,18 @@ void KCoroutine::switchToMainCtx() {
 void KCoroutine::wakeUpFd(int fd) {
     auto it = m_waiting.find(fd);
     if (it != m_waiting.end()) {
-        printf("fd = %d wake up.\n", fd);
+        printf("fd = %d wake up succeed.\n", fd);
+        if (m_fdexpire.count(fd))
+            m_fdexpire[fd] = -1;
         m_ready.push_back(it->second);
         m_waiting.erase(it);
+    } else {
+        printf("fd = %d is not waiting.\n", fd);
     }
 }
 
 ucontext_t* KCoroutine::getMainCtx() {
     return &m_mainctx;
-}
-
-int64_t KCoroutine::NowInMs() {
-    struct timeval tv;
-    gettimeofday(&tv, nullptr);
-    return int64_t(tv.tv_sec * 1000) + tv.tv_usec / 1000;
 }
 
 UnitCoroutine::UnitCoroutine(std::function<void()> run,
